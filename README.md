@@ -508,9 +508,7 @@ Abrir o console:
 
 # 🎬 Demonstração
 
-## 🎬 Demonstração
-
-[![Assista à demonstração do CEFIS AI Tutor](https://img.youtube.com/vi/IoGnne8a7TM/maxresdefault.jpg)](https://youtu.be/IoGnne8a7TM)
+[![Assista ao vídeo](https://img.youtube.com/vi/IoGnne8a7TM/hqdefault.jpg)](https://youtu.be/IoGnne8a7TM)
 
 ---
 

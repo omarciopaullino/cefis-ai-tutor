@@ -506,53 +506,9 @@ Abrir o console:
 
 ---
 
-# 🎬 Demonstração Recomendada
+# 🎬 Demonstração
 
-### 1
-
-```txt
-Quem sou eu?
-```
-
----
-
-### 2
-
-```txt
-O que estou vendo?
-```
-
----
-
-### 3
-
-```txt
-Explique esta aula.
-```
-
----
-
-### 4
-
-```txt
-Tenho 15 minutos. O que devo estudar?
-```
-
----
-
-### 5
-
-```txt
-Me indique cursos sobre comércio internacional.
-```
-
----
-
-### 6
-
-```txt
-Redefinir foco
-```
+https://youtu.be/IoGnne8a7TM
 
 ---
 

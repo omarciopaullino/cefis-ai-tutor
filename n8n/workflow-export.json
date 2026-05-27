@@ -1,0 +1,352 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cefis-tutor-chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        1856,
+        528
+      ],
+      "id": "db7bd57b-44f9-4b57-a1d8-78a2b9cf1edf",
+      "name": "Webhook",
+      "webhookId": "ef0dbfcd-3ee5-4e7f-b150-4a9702d19620"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2272,
+        528
+      ],
+      "id": "60e3cd02-a150-4953-bd0c-120833f244bf",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const GROQ_API_KEY = $env.GROQ_API_KEY;\nconst GROQ_MODEL = $env.GROQ_MODEL || \"openai/gpt-oss-120b\";\nconst CEFIS_API_BASE = \"https://api-v3.cefis.com.br\";\n\nfunction normalizeInput(input) {\n  let body = input.body || input;\n\n  if (typeof body === \"string\") {\n    body = JSON.parse(body);\n  }\n\n  return {\n    sessionId: body.sessionId || \"\",\n    message: body.message || \"\",\n    student: body.student || {},\n    realtime: body.realtime || {},\n    context: body.context || {},\n    history: body.history || [],\n    onboarding: body.onboarding || body.student?.onboarding || {},\n    pedagogicalProfile: body.pedagogicalProfile || body.memory || {},\n    memory: body.memory || {},\n    timestamp: body.timestamp || new Date().toISOString()\n  };\n}\n\nfunction getLoggedStudent(input) {\n  const student = input.student || {};\n  const me = input.realtime?.me || {};\n\n  return {\n    id: student.cefis_user_id || student.id || me.id || null,\n    name: student.name || me.name || null,\n    first_name: student.first_name || me.first_name || null,\n    email: student.email || me.email || null,\n    occupation: student.occupation || me.occupation || null,\n    nivel: student.nivel || me.nivel || null,\n    is_premium: student.is_premium ?? me.is_premium ?? null\n  };\n}\n\nfunction isIdentityQuestion(message) {\n  const text = String(message || \"\").toLowerCase();\n\n  return (\n    text.includes(\"quem sou eu\") ||\n    text.includes(\"qual meu nome\") ||\n    text.includes(\"qual é meu nome\") ||\n    text.includes(\"meu nome\") ||\n    text.includes(\"o que sabe sobre mim\") ||\n    text.includes(\"o que você sabe sobre mim\") ||\n    text.includes(\"estou logado como quem\") ||\n    text.includes(\"meu perfil\") ||\n    text.includes(\"meus dados\") ||\n    text.includes(\"lembra de mim\")\n  );\n}\n\nfunction buildIdentityResponse(input) {\n  const aluno = getLoggedStudent(input);\n  const onboarding = input.onboarding || {};\n  const memory = input.memory || input.pedagogicalProfile || {};\n\n  const gaps = memory.gaps || memory.difficulties || [];\n  const strengths = memory.strengths || [];\n\n  function list(values) {\n    if (!Array.isArray(values) || values.length === 0) return \"ainda não identificado\";\n\n    return values\n      .map(v => typeof v === \"string\" ? v : v.value || v.key || \"\")\n      .filter(Boolean)\n      .slice(0, 5)\n      .join(\", \") || \"ainda não identificado\";\n  }\n\n  const nome = aluno.first_name || aluno.name || \"aluno\";\n\n  return {\n    answer: `Você está logado como ${nome}.\n\nO que sei sobre você até agora:\n- Nome: ${aluno.name || aluno.first_name || \"não informado\"}\n- E-mail: ${aluno.email || \"não informado\"}\n- Ocupação: ${aluno.occupation || \"não informada\"}\n- Objetivo atual: ${onboarding.goal || \"não definido ainda\"}\n- Nível: ${onboarding.level || \"não informado\"}\n- Tempo disponível: ${onboarding.daily_time || \"não informado\"}\n- Estilo de aprendizagem: ${onboarding.learning_style || \"não informado\"}\n- Lacunas percebidas: ${list(gaps)}\n- Pontos fortes percebidos: ${list(strengths)}`,\n    goal: onboarding.goal || \"\",\n    gaps,\n    recommended_courses: [],\n    next_step: \"Posso usar essas informações para adaptar seu próximo plano de estudo.\"\n  };\n}\n\nasync function httpGetJson(url, headers = {}) {\n  return await this.helpers.httpRequest({\n    method: \"GET\",\n    url,\n    headers,\n    json: true\n  });\n}\n\nasync function httpPostJson(url, body, headers = {}) {\n  return await this.helpers.httpRequest({\n    method: \"POST\",\n    url,\n    headers,\n    body,\n    json: true\n  });\n}\n\nasync function interpretSearchIntent(input) {\n  const student = input.student || {};\n  const realtime = input.realtime || {};\n\n  const system = `\nVocê transforma frases humanas em buscas objetivas para catálogo de cursos CEFIS.\n\nSua tarefa:\n- entender a intenção real do aluno;\n- extrair tema principal;\n- gerar termos curtos de busca;\n- gerar sinônimos úteis;\n- inferir área provável.\n\nRegras:\n- Não responda ao aluno.\n- Não seja genérico.\n- Gere termos que provavelmente aparecem em títulos, subtítulos ou keywords de cursos.\n- Responda somente JSON válido.\n`;\n\n  const payload = {\n    aluno: student,\n    pagina_atual: realtime.currentTitle || \"\",\n    texto_da_pagina: (realtime.pageText || \"\").slice(0, 1200),\n    mensagem: input.message,\n    historico_conversas: input.history || [],\n    perfil_pedagogico: input.pedagogicalProfile || {},\n    onboarding: input.onboarding || {},\n    formato: {\n      intent: \"intenção interpretada\",\n      topic: \"tema principal\",\n      search_terms: [\"termo 1\", \"termo 2\", \"termo 3\", \"termo 4\"],\n      fallback_terms: [\"termo extra 1\", \"termo extra 2\"],\n      humanized_context: \"interpretação curta da necessidade do aluno\"\n    }\n  };\n\n  const json = await httpPostJson.call(\n    this,\n    \"https://api.groq.com/openai/v1/chat/completions\",\n    {\n      model: GROQ_MODEL,\n      temperature: 0.1,\n      max_tokens: 500,\n      messages: [\n        { role: \"system\", content: system },\n        { role: \"user\", content: JSON.stringify(payload) }\n      ],\n      response_format: { type: \"json_object\" }\n    },\n    {\n      Authorization: `Bearer ${GROQ_API_KEY}`,\n      \"Content-Type\": \"application/json\"\n    }\n  );\n\n  const content = json.choices?.[0]?.message?.content || \"{}\";\n\n  try {\n    return JSON.parse(content);\n  } catch {\n    return {\n      intent: input.message,\n      topic: input.message,\n      search_terms: [input.message],\n      fallback_terms: [],\n      humanized_context: input.message\n    };\n  }\n}\n\nasync function fetchCefisCourses(search) {\n  const encodedSearch = encodeURIComponent(search);\n  const url = `${CEFIS_API_BASE}/courses?search=${encodedSearch}&count=10&page=1`;\n\n  try {\n    const json = await httpGetJson.call(this, url, {\n      Accept: \"application/json\"\n    });\n\n    return json.data || [];\n  } catch {\n    return [];\n  }\n}\n\nfunction compactCourse(course) {\n  return {\n    id: course.id,\n    title: course.title,\n    url: course.id ? `https://cefis.com.br/portal/cursos/${course.id}` : null,\n    subtitle: course.subtitle,\n    summary: course.summary,\n    keywords: course.keywords,\n    duration: course.duration,\n    lessonCount: course.lessonCount,\n    materialCount: course.materialCount,\n    averageRating: course.averageRating,\n    practiceAverage: course.practiceAverage,\n    teacher: course.teacher?.name || null,\n    categories: course.categories || []\n  };\n}\n\nasync function searchCourses(input) {\n  const interpretation = await interpretSearchIntent.call(this, input);\n\n  const terms = [\n    ...(interpretation.search_terms || []),\n    ...(interpretation.fallback_terms || []),\n    interpretation.topic,\n    input.realtime?.possibleCourseTitle,\n    input.message\n  ]\n    .filter(Boolean)\n    .map(t => String(t).trim())\n    .filter(Boolean);\n\n  const uniqueTerms = [...new Set(terms)].slice(0, 10);\n  const all = [];\n\n  for (const term of uniqueTerms) {\n    const courses = await fetchCefisCourses.call(this, term);\n    all.push(...courses);\n  }\n\n  const unique = new Map();\n\n  for (const course of all) {\n    if (!course.id) continue;\n    unique.set(course.id, compactCourse(course));\n  }\n\n  return {\n    interpretation,\n    terms: uniqueTerms,\n    courses: Array.from(unique.values()).slice(0, 15)\n  };\n}\n\nasync function callGroq({ input, interpretation, searchTerms, courses }) {\n  const aluno = getLoggedStudent(input);\n  const onboarding = input.onboarding || {};\n  const pedagogicalProfile = input.pedagogicalProfile || {};\n  const studentName = aluno.first_name || aluno.name || \"aluno\";\n\n  const goals = [\n    onboarding.goal,\n    ...(pedagogicalProfile.goals || []).map(g => g.value || g)\n  ].filter(Boolean).join(\", \");\n\n  const difficulties = [\n    ...(pedagogicalProfile.gaps || []),\n    ...(pedagogicalProfile.difficulties || [])\n  ].map(d => d.value || d).filter(Boolean).join(\", \");\n\n  const strengths = (pedagogicalProfile.strengths || [])\n    .map(s => s.value || s)\n    .filter(Boolean)\n    .join(\", \");\n\n  const system = `\nVocê é o Tutor IA da CEFIS.\n\nIDENTIDADE:\n- Você é o Tutor IA da CEFIS.\n- O usuário é o aluno logado.\n- first_name, name, email, id e cefis_user_id pertencem ao aluno logado.\n- Nunca diga que você se chama pelo nome do aluno.\n- Se student.first_name = \"Marcio\", então o aluno é Marcio. Você não é Marcio.\n\nREGRA MAIS IMPORTANTE:\nResponda primeiro exatamente o que o aluno perguntou.\nNão mude de assunto.\nNão recomende cursos se o aluno não pediu recomendação, plano ou caminho de estudo.\n\nPERGUNTAS SOBRE IDENTIDADE:\nSe o aluno perguntar \"quem sou eu\", \"qual meu nome\", \"o que você sabe sobre mim\", \"meu perfil\", \"meus dados\" ou \"estou logado como quem\":\n- responda apenas com dados do aluno logado;\n- use aluno, realtime.me, onboarding e memória;\n- não recomende cursos;\n- não crie plano de estudos;\n- não invente informações.\n\nESTILO:\n- Respostas concisas.\n- Humanas.\n- Objetivas.\n- Certeiras.\n- Sem enrolação.\n- Sem marketing.\n- Sem emojis, salvo se fizer muito sentido.\n- Não escreva texto longo se uma resposta curta resolver.\n\nPRECISÃO:\n- Nunca invente dados.\n- Se não souber algo, diga \"não informado\" ou \"ainda não identificado\".\n- Use somente cursos presentes em cursos_reais_encontrados.\n- Nunca invente curso, aula, professor ou link.\n\nCURSOS:\nSó recomende cursos quando:\n- o aluno pedir curso;\n- o aluno pedir plano;\n- o aluno pedir o que estudar;\n- a recomendação for necessária para responder.\n\nSe recomendar cursos:\n- recomende no máximo 3;\n- use somente cursos presentes em cursos_reais_encontrados;\n- mostre sempre o nome e o link real do curso;\n- o link deve ser exatamente o campo url recebido no curso;\n- se o curso não tiver url ou id, não recomende esse curso;\n- nunca invente link;\n- nunca invente curso.\n\nLINKS:\nSe o aluno pedir links de cursos:\n- responda apenas com cursos que estejam em cursos_reais_encontrados;\n- use o campo url recebido;\n- se não houver cursos disponíveis no contexto atual, diga: \"Preciso refazer a busca para recuperar os links corretos.\";\n- nunca crie link sem id real.\n\nPÁGINA ATUAL:\nO campo dados_em_tempo_real_do_aluno representa o que o aluno está vendo agora na plataforma.\n\nUse estes campos:\n- currentUrl: URL aberta\n- currentTitle: título da aba\n- currentPageTitle: título visível detectado\n- currentCourseId: ID do curso, se detectado\n- currentLessonId: ID da aula, se detectado\n- possibleCourseTitle: possível nome do curso/aula\n- pageText: texto visível da página\n\nSe o aluno disser:\n- \"essa aula\"\n- \"esse curso\"\n- \"o que estou vendo?\"\n- \"resume isso\"\n- \"me explica essa tela\"\n- \"qual aula estou?\"\n- \"qual curso está aberto?\"\n\nResponda usando primeiro o contexto da tela.\n\nNão peça para o aluno repetir o nome do curso se possibleCourseTitle, currentPageTitle ou pageText já indicarem isso.\n\nSe não tiver certeza, diga:\n\"Pelo que consigo ver na tela, parece ser...\"\n\nSobre o aluno logado:\n- Nome: ${aluno.name || aluno.first_name || \"não informado\"}\n- Primeiro nome: ${aluno.first_name || \"não informado\"}\n- E-mail: ${aluno.email || \"não informado\"}\n- Ocupação: ${aluno.occupation || \"não informada\"}\n- Premium: ${aluno.is_premium === null ? \"não informado\" : aluno.is_premium}\n- Objetivo: ${goals || \"ainda não definido\"}\n- Nível: ${onboarding.level || \"não informado\"}\n- Tempo disponível: ${onboarding.daily_time || \"não informado\"}\n- Estilo de aprendizagem: ${onboarding.learning_style || \"não informado\"}\n- Lacunas/dificuldades: ${difficulties || \"ainda não identificadas\"}\n- Pontos fortes: ${strengths || \"ainda não identificados\"}\n\nResponda somente JSON válido.\n\nFormato obrigatório:\n{\n  \"answer\": \"resposta final humanizada para o aluno, incluindo links quando recomendar cursos\",\n  \"goal\": \"objetivo detectado\",\n  \"gaps\": [\"lacuna 1\"],\n  \"recommended_courses\": [\"nome real do curso\"],\n  \"next_step\": \"próxima ação prática\",\n  \"proactive_suggestion\": \"sugestão curta\"\n}\n`;\n\n  const payload = {\n    identidade_do_assistente: {\n      nome: \"Tutor IA da CEFIS\",\n      papel: \"mentor de aprendizagem\"\n    },\n    aluno_logado: aluno,\n    nome_do_aluno: studentName,\n    mensagem_do_aluno: input.message,\n    dados_em_tempo_real_do_aluno: input.realtime || {},\n    onboarding,\n    historico_conversas: input.history || [],\n    perfil_pedagogico: pedagogicalProfile,\n    termos_de_busca_usados: searchTerms,\n    cursos_reais_encontrados: courses.map(c => ({\n      id: c.id,\n      title: c.title,\n      url: c.url || (c.id ? `https://cefis.com.br/portal/cursos/${c.id}` : null),\n      subtitle: c.subtitle,\n      summary: c.summary,\n      duration: c.duration,\n      lessonCount: c.lessonCount,\n      teacher: c.teacher\n    })),\n    interpretacao_da_intencao: interpretation\n  };\n\n  const json = await httpPostJson.call(\n    this,\n    \"https://api.groq.com/openai/v1/chat/completions\",\n    {\n      model: GROQ_MODEL,\n      temperature: 0.15,\n      max_tokens: 800,\n      messages: [\n        { role: \"system\", content: system },\n        { role: \"user\", content: JSON.stringify(payload) }\n      ],\n      response_format: { type: \"json_object\" }\n    },\n    {\n      Authorization: `Bearer ${GROQ_API_KEY}`,\n      \"Content-Type\": \"application/json\"\n    }\n  );\n\n  const content = json.choices?.[0]?.message?.content || \"{}\";\n\n  try {\n    return JSON.parse(content);\n  } catch {\n    return {\n      answer: content,\n      goal: \"\",\n      gaps: [],\n      recommended_courses: [],\n      next_step: \"\"\n    };\n  }\n}\n\nasync function main() {\n  if (!GROQ_API_KEY) {\n    return {\n      answer: \"A variável GROQ_API_KEY não está configurada no n8n.\",\n      debug: { missing_env: \"GROQ_API_KEY\" }\n    };\n  }\n\n  const input = normalizeInput($json);\n\n  if (!input.message) {\n    return {\n      answer: \"Me diga o que você quer aprender hoje.\",\n      student: input.student || null\n    };\n  }\n\n  if (isIdentityQuestion(input.message)) {\n    const identity = buildIdentityResponse(input);\n\n    return {\n      ...identity,\n      student: input.student || null,\n      history_count: (input.history || []).length,\n      pedagogical_profile_updated: false,\n      message_analysis: {\n        detected_gaps: [],\n        detected_strengths: []\n      },\n      debug: {\n        route: \"identity\",\n        student: input.student,\n        realtime_has_me: !!input.realtime?.me,\n        current_url: input.realtime?.currentUrl\n      }\n    };\n  }\n\n  const { interpretation, terms, courses } = await searchCourses.call(this, input);\n\n  let ai;\n\n  try {\n    ai = await callGroq.call(this, {\n      input,\n      interpretation,\n      searchTerms: terms,\n      courses\n    });\n  } catch (e) {\n    ai = {\n      answer: \"Tive uma instabilidade para responder agora. Tente novamente em alguns segundos.\",\n      goal: \"\",\n      gaps: [],\n      recommended_courses: [],\n      next_step: \"Tente novamente.\",\n      error: e.message\n    };\n  }\n\n  return {\n    answer: ai.answer || \"Não consegui gerar uma resposta agora.\",\n    goal: ai.goal || \"\",\n    gaps: ai.gaps || [],\n    recommended_courses: ai.recommended_courses || [],\n    next_step: ai.next_step || \"\",\n    proactive_suggestion: ai.proactive_suggestion || \"\",\n    student: input.student || null,\n    history_count: (input.history || []).length,\n    pedagogical_profile_updated: false,\n    message_analysis: {\n      detected_gaps: ai.detected_gaps || [],\n      detected_strengths: ai.detected_strengths || []\n    },\n    debug: {\n      route: \"learning\",\n      student: input.student,\n      realtime_has_me: !!input.realtime?.me,\n      current_url: input.realtime?.currentUrl,\n      current_course_id: input.realtime?.currentCourseId,\n      search_terms: terms,\n      courses_found: courses.length,\n      courses: courses.map(c => ({\n        id: c.id,\n        title: c.title,\n        url: c.url\n      })),\n      ai_error: ai.error || null\n    }\n  };\n}\n\nlet result;\n\ntry {\n  result = await main.call(this);\n} catch (error) {\n  result = {\n    answer: \"Erro no n8n: \" + error.message,\n    debug: {\n      stack: error.stack\n    }\n  };\n}\n\nreturn [\n  {\n    json: {\n      answer: result.answer || JSON.stringify(result),\n      goal: result.goal || \"\",\n      gaps: result.gaps || [],\n      recommended_courses: result.recommended_courses || [],\n      next_step: result.next_step || \"\",\n      proactive_suggestion: result.proactive_suggestion || \"\",\n      student: result.student || null,\n      debug: result.debug || {}\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2064,
+        528
+      ],
+      "id": "cdffa7d5-1980-43ce-ac08-c17b3763ef24",
+      "name": "Code in JavaScript"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "Webhook": [
+      {
+        "headers": {
+          "host": "ai.pleymus.com",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+          "content-length": "25028",
+          "accept": "*/*",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "accept-language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7,es;q=0.6",
+          "content-type": "application/json",
+          "origin": "https://cefis.com.br",
+          "priority": "u=1, i",
+          "referer": "https://cefis.com.br/",
+          "sec-ch-ua": "\"Chromium\";v=\"146\", \"Not-A.Brand\";v=\"24\", \"Google Chrome\";v=\"146\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"Windows\"",
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-site": "cross-site",
+          "x-forwarded-for": "187.68.4.84",
+          "x-forwarded-host": "ai.pleymus.com",
+          "x-forwarded-port": "443",
+          "x-forwarded-proto": "https",
+          "x-forwarded-server": "fe028fafb865",
+          "x-real-ip": "187.68.4.84"
+        },
+        "params": {},
+        "query": {},
+        "body": {
+          "type": "chat",
+          "sessionId": "sess_1779834707911_sg2ecztnoiq",
+          "message": "qual meu email de cadastro?",
+          "student": {
+            "cefis_user_id": 947412,
+            "name": "Marcio",
+            "first_name": "Marcio",
+            "email": "eumarciopaulino@proton.me",
+            "occupation": null,
+            "nivel": null,
+            "registered_at": "2026-05-26 14:30:22",
+            "is_premium": false
+          },
+          "realtime": {
+            "me": {
+              "id": 947412,
+              "name": "Marcio",
+              "first_name": "Marcio",
+              "email": "eumarciopaulino@proton.me",
+              "avatar": "https://cefis.com.br/assets/images/site/svg/user-icon.svg",
+              "profile": null,
+              "birthdate": "",
+              "type": null,
+              "business": null,
+              "cpf": "09953554609",
+              "cnpj": null,
+              "phone": null,
+              "celphone": null,
+              "zipCode": null,
+              "neighborhood": null,
+              "address": null,
+              "city": null,
+              "state": null,
+              "activities": null,
+              "activities_description": null,
+              "occupation": null,
+              "dlt": null,
+              "nivel": null,
+              "certified_name": null,
+              "registered_at": "2026-05-26 14:30:22",
+              "team": null,
+              "is_premium": false,
+              "is_demo_subscriber": false,
+              "premium_plan_active": null,
+              "is_admin": false,
+              "is_teacher": false,
+              "is_teacher_consultant": false,
+              "is_editor": false,
+              "is_team_admin": false,
+              "is_team_manager": false,
+              "team_restrict_access": false
+            },
+            "currentUrl": "https://cefis.com.br/portal/cursos",
+            "currentTitle": "CEFIS - Cursos online de Contabilidade",
+            "currentCourseId": null,
+            "currentCourseLessons": [],
+            "pageText": "Assine o plano premium e aproveite benefícios exclusivos!\n\nSeja premium\nMarcio, adicione seu número de celular e mantenha sua conta segura:\nSalvar Celular\nTodos\nPontuados\nLançamentos\nContábil\nFiscal\nTrabalhista\nGestão\nDesenvolvimento pessoal\nTecnologia\nOutros cursos\nVocê pode se interessar\nNovo\n51 aulas\nComunicação Corporativa\n\ncurso prático\n\nSolange Durães\n\n4.5\n(25)\nNovo\n40 aulas\nAuditoria aduaneira\n\nGravação agendada\n\nRaquel Cavalcanti\n\nNovo\n20 aulas\nSaldo credor de PIS/COFINS\n\ntransição para CBS\n\nSIDNEY D'AGÁZIO\n\n4.7\n(73)\nNovo\n34 aulas\nContador estratégico\n\nEvolua na contabilidade\n\nDAYANE DA SILVA AMARO ROSA\n\n5\n(39)\nNovo\n55 aulas\nECF 2026\n\ncurso prático\n\nARNÓBIO DURÃES\n\n4.8\n(49)\nNovo\n40 aulas\nTeorias do Comércio Internacional aplicadas à América Latina\n\ncurso prático\n\nRaquel Cavalcanti\n\n4.7\n(10)\nNovo\n60 aulas\nECD 2026\n\ncurso prático\n\nARNÓBIO DURÃES\n\n4.8\n(114)\nNovo\n28 aulas\nImposto de Transmissão de Bens Imóveis\n\ncurso prático\n\nSIDNEY D'AGÁZIO\n\n4.8\n(9)\nNovo\n9 aulas\nGestão Tributária Aplicada\n\nNormas, Práticas e Eficiência Fiscal\n\nCAMILA OLIVEIRA\n\n4.8\n(121)\nNovo\n28 aulas\nPreparatório Prático – Exame do CFC\n\ncurso prático\n\nRicardo Neves\n\n4.8\n(128)\nLançamentos\nNovo\n51 aulas\nComunicação Corporativa\n\ncurso prático\n\nSolange Durães\n\n4.5\n(25)\nNovo\n40 aulas\nAuditoria aduaneira\n\nGravação agendada\n\nRaquel Cavalcanti\n\nNovo\n20 aulas\nSaldo credor de PIS/COFINS\n\ntransição para CBS\n\nSIDNEY D'AGÁZIO\n\n4.7\n(73)\nNovo\n34 aulas\nContador estratégico\n\nEvolua na contabilidade\n\nDAYANE DA SILVA AMARO ROSA\n\n5\n(39)\nNovo\n55 aulas\nECF 2026\n\ncurso prático\n\nARNÓBIO DURÃES\n\n4.8\n(49)\nNovo\n40 aulas\nTeorias do Comércio Internacional aplicadas à América Latina\n\ncurso prático\n\nRaquel Cavalcanti\n\n4.7\n(10)\nNovo\n60 aulas\nECD 2026\n\ncurso prático\n\nARNÓBIO DURÃES\n\n4.8\n(114)\nNovo\n28 aulas\nImposto de Transmissão de Bens Imóveis\n\ncurso prático\n\nSIDNEY D'AGÁZIO\n\n4.8\n(9)\nNovo\n9 aulas\nGestão Tributária Aplicada\n\nNormas, Práticas e Eficiência Fiscal\n\nCAMILA OLIVEIRA\n\n4.8\n(121)\nNovo\n28 aulas\nPreparatório Prático – Exame do CFC\n\ncurso prático\n\nRicardo Neves\n\n4.8\n(128)\nNovo\n11 aulas\nReforma tributaria - Regimes específicos\n\nSetor imobiliário\n\nCAMILA OLIVEIRA\n\n4.6\n(79)\nNovo\n75 aulas\nLucro Real 2026\n\nprática\n\nARNÓBIO DURÃES\n\n4.8\n(74)\nNovo\n25 aulas\nCréditos de IBS e CBS\n\ncurso prático\n\nSIDNEY D'AGÁZIO\n\n4.6\n(185)\nNovo\n16 aulas\nIA para contadores\n\nContadores 4.0\n\nRafael Vidal Aroca\n\n4.3\n(309)\nNovo\n10 aulas\nCPC 00\n\nEstrutura Conceitual\n\nCAMILA OLIVEIRA\n\n4.6\n(95)\nNovo\n9 aulas\nReceita Saúde\n\nNovas Regras para Comprovação de Despesa\n\nCAMILA OLIVEIRA\n\n4.7\n(66)\n27 aulas\nResponsabilidade tributária do sócio e do contador\n\nResponsabilidades Tributárias\n\nSIDNEY D'AGÁZIO\n\n4.7\n(41)\n22 aulas\nImpactos da Reforma Tributária sobre o Comércio, indústria e Serviços\n\nCálculo durante o Período de Transição\n\nRICARDO PRADO\n\n4.8\n(241)\n25 aulas\nJuros sobre o Capital Próprio\n\nDistribuição de Lucros JCP\n\nRICARDO PRADO\n\n4.9\n(35)\n65 aulas\nApuração de IRPJ e CSLL no Lucro Real e Presumido\n\n2026\n\nARNÓBIO DURÃES\n\n4.9\n(83)\n56 aulas\nD"
+          },
+          "context": {
+            "url": "https://cefis.com.br/portal/cursos",
+            "title": "CEFIS - Cursos online de Contabilidade",
+            "referrer": "https://cefis.com.br/portal/cursos",
+            "localStorage": {
+              "_communications-customer_id": "\"8f3fa49b-9467-4b9c-aa03-aadcfd620434\"",
+              "_communications-popup_skipped": "\"1779816597736\"",
+              "cefis_tutor_history": "[{\"role\":\"user\",\"message\":\"Tenho 15 minutos para aprender algo importante hoje.\",\"timestamp\":\"2026-05-26T23:51:26.375Z\"},{\"role\":\"assistant\",\"message\":\"Erro no n8n: pedagogicalProfileUpdated is not defined\",\"timestamp\":\"2026-05-26T23:51:34.545Z\"},{\"role\":\"user\",\"message\":\"Tenho 15 minutos para aprender algo importante hoje.\",\"timestamp\":\"2026-05-26T23:52:41.921Z\"},{\"role\":\"assistant\",\"message\":\"Busquei informações na CEFIS, mas tive erro ao chamar a Groq: Cannot read properties of undefined (reading 'goals')\",\"timestamp\":\"2026-05-26T23:52:50.560Z\"},{\"role\":\"user\",\"message\":\"Tenho 15 minutos para aprender algo importante hoje.\",\"timestamp\":\"2026-05-26T23:53:43.043Z\"},{\"role\":\"assistant\",\"message\":\"Erro no n8n: Request failed with status code 400\",\"timestamp\":\"2026-05-26T23:53:45.132Z\"},{\"role\":\"user\",\"message\":\"Tenho 15 minutos para aprender algo importante hoje.\",\"timestamp\":\"2026-05-26T23:54:17.927Z\"},{\"role\":\"assistant\",\"message\":\"Marcio, entendo que você tem só 15 minutos e quer absorver algo realmente útil. Uma boa estratégia é focar na primeira aula do curso \\\"Contabilidade Básica para Não Contadores\\\", que traz uma visão clara da equação patrimonial, dos conceitos de débito e crédito e da estrutura das demonstrações financeiras. Em 15 minutos você pode assistir ao vídeo introdutório, anotar os três pontos‑chave (o que é a equação patrimonial, como funciona o débito × crédito e por que as demonstrações são importantes) e, ao final, responder a três perguntas rápidas para fixar o conteúdo. Assim você ganha um insight prático que já pode aplicar no seu dia a dia.\",\"timestamp\":\"2026-05-26T23:54:28.120Z\"},{\"role\":\"user\",\"message\":\"Recomende um curso da CEFIS para mim.\",\"timestamp\":\"2026-05-26T23:55:17.625Z\"},{\"role\":\"assistant\",\"message\":\"Oi Marcio! Entendi que você quer uma indicação de curso da CEFIS para avançar na sua carreira contábil. Como ainda não especificou um foco, escolhi três opções que cobrem áreas estratégicas e práticas muito valorizadas no mercado: \\n\\n1. **Contador estratégico** – foco em análise de indicadores financeiros, consultoria de negócios e gestão de processos contábeis. Ideal para quem quer se posicionar como parceiro estratégico das empresas.\\n2. **Gestão Tributária Aplicada** – traz normas, práticas e estratégias de eficiência fiscal, essencial para lidar com a complexidade tributária atual.\\n3. **Contabilidade para não contadores** – um caminho rápido para consolidar os fundamentos contábeis e ganhar confiança na prática diária.\\n\\nEsses cursos são bem avaliados (nota acima de 9,5) e têm conteúdo prático que ajuda a aplicar o que você aprende logo nas primeiras aulas.\\n\\n**Próximo passo:** acesse a plataforma da CEFIS, escolha o curso *Contador estratégico* e assista à primeira aula. Ao final, faça o exercício de análise de indicadores financeiros que acompanha a aula – isso já vai colocar a teoria em prática.\\n\\n**Sugestão extra:** depois de concluir a primeira aula, dê uma olhada no módulo introdutório de *Gestão Tributária Aplicada* para começar a integrar a visão estratégica com a tributária. Assim você já cria uma base sólida para decisões mais completas.\\n\\nO que acha de começar por esse caminho?\",\"timestamp\":\"2026-05-26T23:55:28.003Z\"},{\"role\":\"user\",\"message\":\"o que voce sabe sobre meu cadastro na cefis?\",\"timestamp\":\"2026-05-26T23:55:57.492Z\"},{\"role\":\"assistant\",\"message\":\"Oi Marcio! Pelo que vejo no seu cadastro da CEFIS, temos seu nome completo, e‑mail (eumarciopaulino@proton.me), CPF (099.535.546‑09) e a data de registro (26/05/2026). No momento, alguns campos ainda estão vazios: telefone/celular, endereço, bairro, cidade, estado, ocupação e nível de conhecimento. Você também ainda não está no plano premium. Para deixar seu perfil completo e mais seguro, basta acessar a área \\\"Meu Perfil\\\" e preencher esses dados, especialmente o número de celular, que ajuda na recuperação de senha e na proteção da conta. Se quiser, posso te guiar passo a passo para atualizar essas informações.\",\"timestamp\":\"2026-05-26T23:56:08.729Z\"},{\"role\":\"user\",\"message\":\"qual é meu plano atual?\",\"timestamp\":\"2026-05-26T23:56:25.253Z\"},{\"role\":\"assistant\",\"message\":\"Oi Marcio! Pelo que vejo na sua conta, você ainda está no plano gratuito – ainda não possui a assinatura premium ativa. Por isso, na página aparece a sugestão “Assine o plano premium e aproveite benefícios exclusivos!”. Se quiser conferir os detalhes ou mudar de plano, basta entrar em “Minha Conta” > “Assinatura”. Lá você verá o status atual e as opções de upgrade. Qualquer dúvida sobre os benefícios do premium ou como ele pode ajudar nos seus estudos, estou aqui!\",\"timestamp\":\"2026-05-26T23:56:34.606Z\"},{\"role\":\"user\",\"message\":\"Recomende um curso da CEFIS para mim.\",\"timestamp\":\"2026-05-27T00:07:57.771Z\"},{\"role\":\"assistant\",\"message\":\"Entendi o que você quer, Marcio. Como ainda não temos um objetivo específico definido, sugiro começar por cursos que são bem avaliados e abrangem áreas essenciais da contabilidade. Três opções que costumam ser um bom ponto de partida são:\\n1. **Contador Estratégico** – foca em habilidades de planejamento e tomada de decisão para quem quer atuar de forma mais consultiva.\\n2. **Gestão Tributária Aplicada** – traz normas, práticas e estratégias para otimizar a carga tributária das empresas.\\n3. **ECF 2026** – curso prático que prepara para a Escrituração Contábil Fiscal do próximo exercício, essencial para quem lida com obrigações fiscais.\\nEsses cursos são populares, têm boas avaliações e cobrem temas que costumam ser úteis tanto para quem está começando quanto para quem já atua na área. Escolha um que desperte mais seu interesse e dê o primeiro passo hoje mesmo!\",\"timestamp\":\"2026-05-27T00:08:08.033Z\"},{\"role\":\"user\",\"message\":\"mas eu queria algo no ramo imobiliario\",\"timestamp\":\"2026-05-27T00:08:36.382Z\"},{\"role\":\"assistant\",\"message\":\"Entendi, Marcio, você quer se aprofundar no ramo imobiliário. Temos alguns cursos que vão te dar uma base sólida tanto na parte tributária quanto na estruturação de negócios imobiliários. O curso **Imposto de Transmissão de Bens Imóveis** vai te ensinar tudo sobre o ITBI, cálculo da base e procedimentos de lançamento – essencial para quem lida com compra e venda de imóveis. O **Reforma Tributária – Regimes específicos** traz as particularidades do setor imobiliário após a reforma, mostrando como aplicar os novos regimes de forma correta. Por fim, o **Aprofundamento em SPE e SCP para Empreendimentos Imobiliários** explica como montar sociedades de propósito específico e sociedades em conta de participação, fundamentais para estruturar projetos de incorporação e desenvolvimento. Esses três cursos cobrem os principais pontos que você mencionou e ainda vão abrir portas para atuar com mais segurança e estratégia no mercado imobiliário.\",\"timestamp\":\"2026-05-27T00:08:47.860Z\"},{\"role\":\"user\",\"message\":\"transaçoes imobiliarias tem algum?\",\"timestamp\":\"2026-05-27T00:09:16.927Z\"},{\"role\":\"assistant\",\"message\":\"Oi Marcio! Entendi que você quer saber se temos algum curso sobre transações imobiliárias. Temos sim, e eles cobrem desde a teoria do ITBI até a prática da regularização de documentos e cálculo tributário. Vou indicar três opções que se complementam: \\n1. **Transações imobiliárias** – foco no ITBI, processos de transferência e regularização. \\n2. **Imposto de Transmissão de Bens Imóveis** – entra em detalhes de identificação de fatos geradores, base de cálculo e lançamentos. \\n3. **Contabilidade e tributação na construção civil e atividades imobiliárias** – traz a visão mais ampla da contabilidade e planejamento tributário no setor imobiliário. \\nEsses cursos vão te dar a base prática que você precisa para atuar com segurança nas transações de imóveis.\",\"timestamp\":\"2026-05-27T00:09:27.632Z\"},{\"role\":\"user\",\"message\":\"qual meu email de cadastro?\",\"timestamp\":\"2026-05-27T00:12:01.673Z\"}]",
+              "_communications-external_id": "947412",
+              "cefis_tutor_session_id": "sess_1779834707911_sg2ecztnoiq",
+              "cefis_tutor_pedagogical_profile": "{\"strengths\":[{\"value\":\"Tente novamente.\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:52:50.561Z\"},{\"value\":\"Reserve agora 15 minutos, abra o curso, assista à primeira aula \\\"Introdução à Contabilidade e Equação Patrimonial\\\", faça anotações dos três pontos‑chave e responda a 3 perguntas de revisão ao final.\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:54:28.120Z\"},{\"value\":\"Iniciar a primeira aula do curso \\\"Contador estratégico\\\" e completar o exercício de análise de indicadores financeiros\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:55:28.004Z\"},{\"value\":\"Acesse \\\"Meu Perfil\\\" no portal da CEFIS, clique em \\\"Editar\\\" e preencha telefone, endereço e demais campos faltantes.\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:56:08.729Z\"},{\"value\":\"Acesse a área \\\"Minha Conta\\\" > \\\"Assinatura\\\" para verificar o status da sua assinatura ou iniciar o upgrade para o plano premium\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:56:34.606Z\"},{\"value\":\"Acesse a página de cursos, clique no curso escolhido e inicie a primeira aula (cerca de 10 minutos).\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-27T00:08:08.033Z\"},{\"value\":\"Assista à primeira aula do curso \\\"Imposto de Transmissão de Bens Imóveis\\\" e faça o exercício de cálculo do ITBI; anote dúvidas para revisar na próxima sessão.\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-27T00:08:47.861Z\"},{\"value\":\"Assista à primeira aula do curso \\\"Transações imobiliárias\\\" e, em seguida, faça o exercício de cálculo do ITBI usando um exemplo de compra de imóvel de R$ 500.000.\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-27T00:09:27.632Z\"}],\"difficulties\":[{\"value\":\"tempo limitado para estudo\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:54:28.120Z\"},{\"value\":\"necessidade de resumo de conceitos contábeis ou tributários\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:54:28.120Z\"},{\"value\":\"necessidade de aprofundar análise de indicadores financeiros\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:55:28.004Z\"},{\"value\":\"necessidade de dominar práticas de gestão tributária\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:55:28.004Z\"},{\"value\":\"telefone/celular não cadastrado\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:56:08.729Z\"},{\"value\":\"endereço e dados de contato incompletos\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:56:08.729Z\"},{\"value\":\"ocupação e nível de conhecimento ausentes\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:56:08.729Z\"},{\"value\":\"não é usuário premium\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-26T23:56:08.729Z\"},{\"value\":\"definir área de interesse ou objetivo de aprendizado\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-27T00:08:08.033Z\"},{\"value\":\"tributação de imóveis (ITBI)\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-27T00:08:47.861Z\"},{\"value\":\"regimes específicos de tributação no setor imobiliário\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-27T00:08:47.861Z\"},{\"value\":\"estruturação societária de empreendimentos imobiliários\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-27T00:08:47.861Z\"},{\"value\":\"aplicação prática de ITBI e tributação nas transações imobiliárias\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-27T00:09:27.632Z\"},{\"value\":\"processos de regularização e transferência de propriedade\",\"importance\":\"high\",\"lastUpdated\":\"2026-05-27T00:09:27.632Z\"}]}",
+              "_gcl_ls": "{\"schema\":\"gcl\",\"version\":1,\"gcl_ctr\":{\"value\":{\"value\":0,\"timeouts\":0,\"errors\":0,\"eopCount\":0,\"creationTimeMs\":1779816585250},\"expires\":1787592585250}}",
+              "li_adsId": "bc3c1734-0cad-4cb0-85b3-dea066194a71",
+              "welcome-first-login:947412": "true"
+            },
+            "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            "language": "en-US"
+          },
+          "history": [
+            {
+              "role": "assistant",
+              "message": "Oi Marcio! Pelo que vejo na sua conta, você ainda está no plano gratuito – ainda não possui a assinatura premium ativa. Por isso, na página aparece a sugestão “Assine o plano premium e aproveite benefícios exclusivos!”. Se quiser conferir os detalhes ou mudar de plano, basta entrar em “Minha Conta” > “Assinatura”. Lá você verá o status atual e as opções de upgrade. Qualquer dúvida sobre os benefícios do premium ou como ele pode ajudar nos seus estudos, estou aqui!",
+              "timestamp": "2026-05-26T23:56:34.606Z"
+            },
+            {
+              "role": "user",
+              "message": "Recomende um curso da CEFIS para mim.",
+              "timestamp": "2026-05-27T00:07:57.771Z"
+            },
+            {
+              "role": "assistant",
+              "message": "Entendi o que você quer, Marcio. Como ainda não temos um objetivo específico definido, sugiro começar por cursos que são bem avaliados e abrangem áreas essenciais da contabilidade. Três opções que costumam ser um bom ponto de partida são:\n1. **Contador Estratégico** – foca em habilidades de planejamento e tomada de decisão para quem quer atuar de forma mais consultiva.\n2. **Gestão Tributária Aplicada** – traz normas, práticas e estratégias para otimizar a carga tributária das empresas.\n3. **ECF 2026** – curso prático que prepara para a Escrituração Contábil Fiscal do próximo exercício, essencial para quem lida com obrigações fiscais.\nEsses cursos são populares, têm boas avaliações e cobrem temas que costumam ser úteis tanto para quem está começando quanto para quem já atua na área. Escolha um que desperte mais seu interesse e dê o primeiro passo hoje mesmo!",
+              "timestamp": "2026-05-27T00:08:08.033Z"
+            },
+            {
+              "role": "user",
+              "message": "mas eu queria algo no ramo imobiliario",
+              "timestamp": "2026-05-27T00:08:36.382Z"
+            },
+            {
+              "role": "assistant",
+              "message": "Entendi, Marcio, você quer se aprofundar no ramo imobiliário. Temos alguns cursos que vão te dar uma base sólida tanto na parte tributária quanto na estruturação de negócios imobiliários. O curso **Imposto de Transmissão de Bens Imóveis** vai te ensinar tudo sobre o ITBI, cálculo da base e procedimentos de lançamento – essencial para quem lida com compra e venda de imóveis. O **Reforma Tributária – Regimes específicos** traz as particularidades do setor imobiliário após a reforma, mostrando como aplicar os novos regimes de forma correta. Por fim, o **Aprofundamento em SPE e SCP para Empreendimentos Imobiliários** explica como montar sociedades de propósito específico e sociedades em conta de participação, fundamentais para estruturar projetos de incorporação e desenvolvimento. Esses três cursos cobrem os principais pontos que você mencionou e ainda vão abrir portas para atuar com mais segurança e estratégia no mercado imobiliário.",
+              "timestamp": "2026-05-27T00:08:47.860Z"
+            },
+            {
+              "role": "user",
+              "message": "transaçoes imobiliarias tem algum?",
+              "timestamp": "2026-05-27T00:09:16.927Z"
+            },
+            {
+              "role": "assistant",
+              "message": "Oi Marcio! Entendi que você quer saber se temos algum curso sobre transações imobiliárias. Temos sim, e eles cobrem desde a teoria do ITBI até a prática da regularização de documentos e cálculo tributário. Vou indicar três opções que se complementam: \n1. **Transações imobiliárias** – foco no ITBI, processos de transferência e regularização. \n2. **Imposto de Transmissão de Bens Imóveis** – entra em detalhes de identificação de fatos geradores, base de cálculo e lançamentos. \n3. **Contabilidade e tributação na construção civil e atividades imobiliárias** – traz a visão mais ampla da contabilidade e planejamento tributário no setor imobiliário. \nEsses cursos vão te dar a base prática que você precisa para atuar com segurança nas transações de imóveis.",
+              "timestamp": "2026-05-27T00:09:27.632Z"
+            },
+            {
+              "role": "user",
+              "message": "qual meu email de cadastro?",
+              "timestamp": "2026-05-27T00:12:01.673Z"
+            }
+          ],
+          "pedagogicalProfile": {
+            "strengths": [
+              {
+                "value": "Tente novamente.",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:52:50.561Z"
+              },
+              {
+                "value": "Reserve agora 15 minutos, abra o curso, assista à primeira aula \"Introdução à Contabilidade e Equação Patrimonial\", faça anotações dos três pontos‑chave e responda a 3 perguntas de revisão ao final.",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:54:28.120Z"
+              },
+              {
+                "value": "Iniciar a primeira aula do curso \"Contador estratégico\" e completar o exercício de análise de indicadores financeiros",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:55:28.004Z"
+              },
+              {
+                "value": "Acesse \"Meu Perfil\" no portal da CEFIS, clique em \"Editar\" e preencha telefone, endereço e demais campos faltantes.",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:56:08.729Z"
+              },
+              {
+                "value": "Acesse a área \"Minha Conta\" > \"Assinatura\" para verificar o status da sua assinatura ou iniciar o upgrade para o plano premium",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:56:34.606Z"
+              },
+              {
+                "value": "Acesse a página de cursos, clique no curso escolhido e inicie a primeira aula (cerca de 10 minutos).",
+                "importance": "high",
+                "lastUpdated": "2026-05-27T00:08:08.033Z"
+              },
+              {
+                "value": "Assista à primeira aula do curso \"Imposto de Transmissão de Bens Imóveis\" e faça o exercício de cálculo do ITBI; anote dúvidas para revisar na próxima sessão.",
+                "importance": "high",
+                "lastUpdated": "2026-05-27T00:08:47.861Z"
+              },
+              {
+                "value": "Assista à primeira aula do curso \"Transações imobiliárias\" e, em seguida, faça o exercício de cálculo do ITBI usando um exemplo de compra de imóvel de R$ 500.000.",
+                "importance": "high",
+                "lastUpdated": "2026-05-27T00:09:27.632Z"
+              }
+            ],
+            "difficulties": [
+              {
+                "value": "tempo limitado para estudo",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:54:28.120Z"
+              },
+              {
+                "value": "necessidade de resumo de conceitos contábeis ou tributários",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:54:28.120Z"
+              },
+              {
+                "value": "necessidade de aprofundar análise de indicadores financeiros",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:55:28.004Z"
+              },
+              {
+                "value": "necessidade de dominar práticas de gestão tributária",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:55:28.004Z"
+              },
+              {
+                "value": "telefone/celular não cadastrado",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:56:08.729Z"
+              },
+              {
+                "value": "endereço e dados de contato incompletos",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:56:08.729Z"
+              },
+              {
+                "value": "ocupação e nível de conhecimento ausentes",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:56:08.729Z"
+              },
+              {
+                "value": "não é usuário premium",
+                "importance": "high",
+                "lastUpdated": "2026-05-26T23:56:08.729Z"
+              },
+              {
+                "value": "definir área de interesse ou objetivo de aprendizado",
+                "importance": "high",
+                "lastUpdated": "2026-05-27T00:08:08.033Z"
+              },
+              {
+                "value": "tributação de imóveis (ITBI)",
+                "importance": "high",
+                "lastUpdated": "2026-05-27T00:08:47.861Z"
+              },
+              {
+                "value": "regimes específicos de tributação no setor imobiliário",
+                "importance": "high",
+                "lastUpdated": "2026-05-27T00:08:47.861Z"
+              },
+              {
+                "value": "estruturação societária de empreendimentos imobiliários",
+                "importance": "high",
+                "lastUpdated": "2026-05-27T00:08:47.861Z"
+              },
+              {
+                "value": "aplicação prática de ITBI e tributação nas transações imobiliárias",
+                "importance": "high",
+                "lastUpdated": "2026-05-27T00:09:27.632Z"
+              },
+              {
+                "value": "processos de regularização e transferência de propriedade",
+                "importance": "high",
+                "lastUpdated": "2026-05-27T00:09:27.632Z"
+              }
+            ]
+          },
+          "messageAnalysis": {
+            "gaps": [],
+            "strengths": []
+          },
+          "timestamp": "2026-05-27T00:12:02.099Z"
+        },
+        "webhookUrl": "https://<sua-url>/webhook/cefis-tutor-chat",
+        "executionMode": "production"
+      }
+    ]
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7db32bc4f6c418277dfd9999a78d1eae7e25cef75e1e88d73e3a222e58777ba7"
+  }
+}
